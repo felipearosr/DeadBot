@@ -1,0 +1,91 @@
+[
+    {
+        "run_date": "2025-05-24",
+        "wcl_link": "https://www.warcraftlogs.com/reports/JGnfFm7Nd3zyphxV",
+        "total_gold": 2432125,
+        "raid_leader_cut_percentage": 0.015,
+        "raid_leader_share_gold": 36481.88,
+        "guild_cut_percentage": 0.035,
+        "guild_share_gold": 83847.51,
+        "gold_per_booster": 135987.98,
+        "num_boosters": 17,
+        "active_boosters": [
+            {
+                "name": "\ud83d\udc97PuriPuriPrisoner\ud83d\udc97",
+                "discord_id": "89648467856605184"
+            },
+            {
+                "name": "Bluvoi-Area52",
+                "discord_id": "141644559846342656"
+            },
+            {
+                "name": "Raralock-Area52",
+                "discord_id": "97579356053856256"
+            },
+            {
+                "name": "Lehti",
+                "discord_id": "142074711118053376"
+            },
+            {
+                "name": "ajuker",
+                "discord_id": "192397116436381698"
+            },
+            {
+                "name": "Miriska",
+                "discord_id": "201923925016313856"
+            },
+            {
+                "name": "Dracolordb",
+                "discord_id": "125011769356845057"
+            },
+            {
+                "name": "Holyskid",
+                "discord_id": "139271039447334912"
+            },
+            {
+                "name": "Darkmiget-Area52",
+                "discord_id": "131858005657387009"
+            },
+            {
+                "name": "Shiftyc\u00e8nt-Area52",
+                "discord_id": "189843671196237825"
+            },
+            {
+                "name": "\u1d22\u029f\u028f",
+                "discord_id": "176845452363300864"
+            },
+            {
+                "name": "Fulm\u2588\u2580\u2588\u2588\u2584\u2588\u2580\u2588\u2580",
+                "discord_id": "147911180516720641"
+            },
+            {
+                "name": "Taara-Magtheridon",
+                "discord_id": "160084539547451392"
+            },
+            {
+                "name": "Dead",
+                "discord_id": "286626161306501131"
+            },
+            {
+                "name": "Tybow",
+                "discord_id": "313146697230450688"
+            },
+            {
+                "name": "Wyrm/Padfoot-Anetheron",
+                "discord_id": "432581834228891690"
+            },
+            {
+                "name": "L\u00f2nely-BleedingHollow",
+                "discord_id": "107601537131376640"
+            }
+        ],
+        "benched_players": [
+            "Nolando",
+            "Milktruk/Bigsneak",
+            "Soulgsham-BleedingHollow"
+        ],
+        "processed_by_user_id": "286626161306501131",
+        "processed_by_username": "f.aros",
+        "timestamp_utc": "2025-05-26T07:01:46.793472+00:00"
+    }
+]

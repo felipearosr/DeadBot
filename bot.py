@@ -1,16 +1,17 @@
 import discord
-from discord import app_commands
+from discord import app_commands # Ensure this is imported if not already at top
 from discord.ext import commands
 import io
-import csv
-import os
-import json
+# import csv # Only needed by /log, can be imported there if not used elsewhere
+# import os # Only needed by __main__ if checking files, not needed if DB only
+import json # Potentially needed by /cut for log_entry formatting before DB
 import datetime
 from typing import List, Dict, Tuple, Optional 
+import asyncpg # For database interactions
 
-import config
-import utils 
-from utils import AltInfo
+import config # Your configuration file
+import utils  # Your utility functions
+from utils import AltInfo # Your TypedDict
 
 # --- Type Hinting & Bot State ---
 class CurrentRunData:
@@ -30,6 +31,7 @@ class CurrentRunData:
 current_run_session = CurrentRunData()
 # Module-level globals removed; they are now instance attributes of RaidManagerBot
 
+
 class RaidManagerBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
@@ -38,16 +40,49 @@ class RaidManagerBot(commands.Bot):
         self.initial_extensions = ['admin_char_cmds'] 
         
         # Initialize as instance attributes
+        self.db_pool: Optional[asyncpg.Pool] = None # For database connection pool
         self.alt_mappings: Dict[str, AltInfo] = {}
         self.run_logs: List[Dict] = []
 
     async def setup_hook(self):
+        # --- DATABASE CONNECTION AND INITIAL DATA LOAD ---
+        try:
+            # Ensure DATABASE_URL is correctly set in config and environment
+            if not config.DATABASE_URL or "db_fallback_local_dev" in config.DATABASE_URL:
+                raise ConnectionError("DATABASE_URL is not properly configured.")
+
+            self.db_pool = await asyncpg.create_pool(dsn=config.DATABASE_URL, min_size=1, max_size=10)
+            if self.db_pool:
+                print("Successfully connected to PostgreSQL and created connection pool.")
+                await utils.setup_database_tables(self.db_pool) # Create tables if they don't exist
+                
+                # Load initial data from DB into memory using DB-specific functions
+                self.alt_mappings = await utils.load_all_alt_mappings_from_db(self.db_pool)
+                self.run_logs = await utils.load_all_run_logs_from_db(self.db_pool) # Loads all, consider if this gets too large
+                print(f"Loaded {len(self.alt_mappings)} alts and {len(self.run_logs)} logs from database.")
+            else:
+                # This case should ideally not be reached if create_pool fails; it would raise an exception.
+                print("ERROR: Database pool creation unexpectedly returned None. Bot may not function correctly.")
+        except ConnectionRefusedError:
+            print(f"CRITICAL ERROR: Connection to PostgreSQL database was refused. Check if DB is running and accessible at: {config.DATABASE_URL}")
+            print("Bot will continue without database functionality where possible, but data persistence will fail.")
+        except asyncpg.exceptions.InvalidPasswordError:
+            print(f"CRITICAL ERROR: Invalid password for PostgreSQL database. Check DATABASE_URL.")
+            print("Bot will continue without database functionality where possible, but data persistence will fail.")
+        except Exception as e_db_setup:
+            print(f"CRITICAL ERROR: Failed to connect to PostgreSQL or setup database: {e_db_setup}")
+            import traceback
+            traceback.print_exc()
+            print("Bot will attempt to continue without database functionality for some commands, but data persistence will fail.")
+        # --- END DATABASE SETUP ---
+
+        # Load extensions (cogs)
         for extension in self.initial_extensions:
             try:
-                await self.load_extension(extension)
+                await self.load_extension(extension) # Loads cogs like admin_char_cmds.py
                 print(f"Successfully loaded extension: {extension}")
-            except Exception as e:
-                print(f"Failed to load extension {extension}:")
+            except Exception as e_load_ext:
+                print(f"Failed to load extension {extension}: {e_load_ext}")
                 import traceback
                 traceback.print_exc()
 
@@ -86,24 +121,32 @@ class RaidManagerBot(commands.Bot):
                      print(f"ERROR: Bot is not in guild {guild_id} or lacks 'application.commands' scope or permissions. Cannot sync commands.")
                 except Exception as e_sync_guild:
                     print(f"Error during command sync for guild {guild_id}: {e_sync_guild}")
-        else: # No target guilds specified, sync globally (if not cleared)
-            if not CLEAR_GLOBAL_COMMANDS_ONCE: # Only sync globally if we are not in the process of clearing them
-                print("No TARGET_GUILD_IDS specified in config. Attempting global command sync.")
-                try:
-                    synced_commands = await self.tree.sync()
-                    print(f"Synced {len(synced_commands)} global application commands.")
-                except Exception as e_global_sync:
-                    print(f"Error during global command sync: {e_global_sync}")
+        elif not CLEAR_GLOBAL_COMMANDS_ONCE: # No target guilds specified, sync globally (if not cleared)
+            print("No TARGET_GUILD_IDS specified in config. Attempting global command sync.")
+            try:
+                synced_commands = await self.tree.sync()
+                print(f"Synced {len(synced_commands)} global application commands.")
+            except Exception as e_global_sync:
+                print(f"Error during global command sync: {e_global_sync}")
         
         print("Command syncing process complete. Review logs.")
         # --- END COMMAND SYNCING ---
            
-        self.alt_mappings = utils.load_alt_mappings(config.ALTS_FILE)
-        self.run_logs = utils.load_run_logs(config.RUN_LOGS_FILE)
-        print(f"Loaded {len(self.alt_mappings)} alts and {len(self.run_logs)} logs.")
+        # The loading of alt_mappings and run_logs is now done within the database setup block above.
+        # The print statement for loaded alts/logs is also part of that block.
+
+    async def close(self):
+        """Gracefully closes the database connection pool when the bot shuts down."""
+        if self.db_pool:
+            await self.db_pool.close()
+            print("Database connection pool closed.")
+        await super().close() # Call the parent class's close method
 
     async def on_ready(self):
         print(f'Logged in as {self.user.name} ({self.user.id})')
+        if not self.db_pool:
+            print("WARNING: Bot is ready, but database connection pool was NOT established successfully.")
+            print("Data persistence and some commands may not work correctly.")
 
 bot = RaidManagerBot()
 

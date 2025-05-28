@@ -522,36 +522,43 @@ async def cut_error(interaction: discord.Interaction, error: app_commands.AppCom
 
 # --- Main Execution Block ---
 if __name__ == "__main__":
-    # Ensure essential files exist
-    if not os.path.exists(config.ALTS_FILE):
-        with open(config.ALTS_FILE, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow(["DiscordUserID", "PaymentAltName", "Faction"])
-        print(f"INFO: {config.ALTS_FILE} created with headers.")
+    # The os.path.exists checks and creation for ALTS_FILE and RUN_LOGS_FILE
+    # have been REMOVED because data is now in the PostgreSQL database.
+    # The database tables are created in RaidManagerBot.setup_hook() via utils.setup_database_tables()
+
+    bot_token_to_check = getattr(config, 'BOT_TOKEN', "YOUR_BOT_TOKEN_FALLBACK_IF_NOT_SET_LOCALLY")
+    db_url_to_check = getattr(config, 'DATABASE_URL', "postgresql://user:pass@host:port/db_fallback_local_dev")
+
+    # Perform checks on configuration
+    critical_config_missing = False
+    if "YOUR_BOT_TOKEN_FALLBACK_IF_NOT_SET_LOCALLY" in bot_token_to_check or not bot_token_to_check:
+        print("ERROR: BOT_TOKEN is not correctly set. Please set it as an environment variable on Railway or in your local .env file.")
+        critical_config_missing = True
     
-    if not os.path.exists(config.RUN_LOGS_FILE):
-        with open(config.RUN_LOGS_FILE, 'w', encoding='utf-8') as f:
-            json.dump([], f) # Initialize with an empty list
-        print(f"INFO: {config.RUN_LOGS_FILE} created as empty JSON array.")
+    if "db_fallback_local_dev" in db_url_to_check or not db_url_to_check:
+        print("ERROR: DATABASE_URL is not correctly set. Please set it as an environment variable on Railway (from your PostgreSQL service) or in your local .env file.")
+        critical_config_missing = True
 
-    guild_id_to_check = getattr(config, 'TARGET_GUILD_IDS', 0)
-    bot_token_to_check = getattr(config, 'BOT_TOKEN', "")
-    allowed_roles_to_check = getattr(config, 'ALLOWED_ROLES_FOR_ADMIN_CMDS', [])
-    rl_cut_percentage_config = getattr(config, 'RAID_LEADER_CUT_PERCENTAGE', 0.0)
-
-    if str(guild_id_to_check).lower() == "your_discord_server_id" or guild_id_to_check == 0:
-        print(f"ERROR: Please set your actual TARGET_GUILD_IDS in config.py. Current: {guild_id_to_check}")
-    elif bot_token_to_check == "YOUR_BOT_TOKEN" or not bot_token_to_check:
-        print("ERROR: Please set your BOT_TOKEN in config.py.")
-    elif not allowed_roles_to_check or \
-         (isinstance(allowed_roles_to_check, list) and len(allowed_roles_to_check) == 1 and
-          allowed_roles_to_check[0] in ["YOUR_ADMIN_ROLE_NAME_OR_ID_1", 123456789012345678]): # Example placeholder
-        print("WARNING: config.ALLOWED_ROLES_FOR_ADMIN_CMDS in config.py might be using default placeholder values or is empty. Please configure with your specific role names or IDs if admin commands are not working as expected.")
-        bot.run(bot_token_to_check)
+    if critical_config_missing:
+        print("Halting bot due to missing critical configuration.")
+        # Consider exiting more gracefully or raising an exception if preferred
+        exit(1) 
     else:
+        # Non-critical config logging (optional)
+        rl_cut_percentage_config = getattr(config, 'RAID_LEADER_CUT_PERCENTAGE', 0.0)
         if rl_cut_percentage_config > 0.0:
-             print(f"INFO: `RAID_LEADER_CUT_PERCENTAGE` is set to {rl_cut_percentage_config*100:.1f}%. "
-                   "This amount will be deducted for the Raid Leader (manual payout).")
+             print(f"INFO: `RAID_LEADER_CUT_PERCENTAGE` is set to {rl_cut_percentage_config*100:.1f}%.")
         else:
-             print("INFO: `RAID_LEADER_CUT_PERCENTAGE` is 0.0 or not defined in config.py. No Raid Leader cut will be applied by default.")
-        bot.run(bot_token_to_check)
+             print("INFO: `RAID_LEADER_CUT_PERCENTAGE` is 0.0 or not defined. No Raid Leader cut applied by default.")
+        
+        print(f"INFO: ALLOWED_ROLES_FOR_ADMIN_CMDS set to: {config.ALLOWED_ROLES_FOR_ADMIN_CMDS}")
+        print(f"INFO: TARGET_GUILD_IDS set to: {config.TARGET_GUILD_IDS}")
+
+        try:
+            bot.run(bot_token_to_check)
+        except discord.LoginFailure:
+            print("ERROR: Failed to log in. Check if BOT_TOKEN is correct and valid.")
+        except Exception as e:
+            print(f"ERROR: An unexpected error occurred while trying to run the bot: {e}")
+            import traceback
+            traceback.print_exc()

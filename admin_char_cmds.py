@@ -31,23 +31,40 @@ class AdminCharCommands(commands.Cog):
     async def admin_set_payment_char(self, interaction: discord.Interaction, user: discord.User, payment_alt_name: str, faction: app_commands.Choice[str]):
         await interaction.response.defer(ephemeral=True)
         target_user_id = str(user.id)
+        
+        if not self.bot.db_pool: # Check if the database pool is available
+            await interaction.followup.send("Database connection is not available at the moment. Please try again later.", ephemeral=True)
+            print("ERROR: admin_set_payment_char - db_pool not available on self.bot.")
+            return
 
-        # Access alt_mappings via the stored bot instance
+        cleaned_alt_name = payment_alt_name.strip()
+        chosen_faction = faction.value
+
         print(f"DEBUG: alt_mappings BEFORE admin update (in cog): {self.bot.alt_mappings}")
 
-        self.bot.alt_mappings[target_user_id] = {
-            "alt": payment_alt_name.strip(),
-            "faction": faction.value
-        }
-        print(f"DEBUG: alt_mappings AFTER admin update (in cog): {self.bot.alt_mappings}")
+        try:
+            # ---- THIS IS THE CORRECTED PART ----
+            # Call the new database save function from utils.py
+            await utils.save_alt_to_db(self.bot.db_pool, target_user_id, cleaned_alt_name, chosen_faction)
+            
+            # Also update the in-memory cache on the bot instance
+            self.bot.alt_mappings[target_user_id] = {
+                "alt": cleaned_alt_name,
+                "faction": chosen_faction
+            }
+            # ---- END OF CORRECTION ----
+            print(f"DEBUG: alt_mappings AFTER admin update (in cog): {self.bot.alt_mappings}")
 
-        utils.save_alt_mappings(self.bot.alt_mappings, config.ALTS_FILE)
-
-        await interaction.followup.send(
-            f"Payment character for **{user.display_name}** (`{user.id}`) has been set/updated to: **{payment_alt_name}** ({faction.name}).",
-            ephemeral=True
-        )
-        print(f"Admin {interaction.user.name} set payment char for {user.name} ({target_user_id}) to {payment_alt_name} ({faction.name}).")
+            await interaction.followup.send(
+                f"Payment character for **{user.display_name}** (`{user.id}`) has been set/updated to: **{cleaned_alt_name}** ({chosen_faction}). Saved to DB.",
+                ephemeral=True
+            )
+            print(f"Admin {interaction.user.name} set payment char for {user.name} ({target_user_id}) to {cleaned_alt_name} ({chosen_faction}).")
+        except Exception as e:
+            print(f"ERROR in admin_set_payment_char while saving to DB: {e}")
+            import traceback
+            traceback.print_exc()
+            await interaction.followup.send("An error occurred while trying to save the payment character for the user. Please try again.", ephemeral=True)
 
     @admin_set_payment_char.error
     async def admin_set_payment_char_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):

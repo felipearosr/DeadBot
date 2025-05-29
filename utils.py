@@ -117,6 +117,7 @@ async def load_all_run_logs_from_db(pool: asyncpg.Pool) -> List[Dict]:
     return [dict(record) for record in records]
 
 async def save_run_log_entry_to_db(pool: asyncpg.Pool, log_entry: Dict) -> None:
+    """Saves a single run log entry to the database."""
     query = """
         INSERT INTO run_logs (
             run_date, wcl_link, total_gold, raid_leader_cut_percentage,
@@ -138,23 +139,37 @@ async def save_run_log_entry_to_db(pool: asyncpg.Pool, log_entry: Dict) -> None:
     
     # Convert timestamp_utc string to datetime object if it's not already
     timestamp_utc_obj = log_entry.get("timestamp_utc")
-    if isinstance(timestamp_utc_obj, str):
+    if isinstance(timestamp_utc_obj, str): # Should already be a datetime object from /cut
         try:
             timestamp_utc_obj = datetime.datetime.fromisoformat(timestamp_utc_obj)
         except ValueError:
             print(f"Warning: Could not parse timestamp_utc string '{log_entry.get('timestamp_utc')}' for DB insert. Using NULL.")
             timestamp_utc_obj = None
+    elif not isinstance(timestamp_utc_obj, datetime.datetime): # If it's something else unexpected
+        print(f"Warning: timestamp_utc is not a datetime object or recognized string. Type: {type(timestamp_utc_obj)}. Using NULL.")
+        timestamp_utc_obj = None
 
+
+    # ---- MODIFICATION HERE ----
+    # Explicitly convert lists/dicts intended for JSONB columns to JSON strings
+    active_boosters_json = json.dumps(log_entry.get("active_boosters", []))
+    benched_players_json = json.dumps(log_entry.get("benched_players", []))
+    # ---- END MODIFICATION ----
 
     await db_execute(pool, query,
         run_date_obj,
-        log_entry.get("wcl_link"), log_entry.get("total_gold"),
-        log_entry.get("raid_leader_cut_percentage"), log_entry.get("raid_leader_share_gold"),
-        log_entry.get("guild_cut_percentage"), log_entry.get("guild_share_gold"),
-        log_entry.get("gold_per_booster"), log_entry.get("num_boosters"),
-        log_entry.get("active_boosters"), # asyncpg handles dict/list to JSONB
-        log_entry.get("benched_players"), # asyncpg handles dict/list to JSONB
-        log_entry.get("processed_by_user_id"), log_entry.get("processed_by_username"),
+        log_entry.get("wcl_link"), 
+        log_entry.get("total_gold"),
+        log_entry.get("raid_leader_cut_percentage"), 
+        log_entry.get("raid_leader_share_gold"),
+        log_entry.get("guild_cut_percentage"), 
+        log_entry.get("guild_share_gold"),
+        log_entry.get("gold_per_booster"), 
+        log_entry.get("num_boosters"),
+        active_boosters_json,         # Pass the JSON string
+        benched_players_json,         # Pass the JSON string
+        log_entry.get("processed_by_user_id"), 
+        log_entry.get("processed_by_username"),
         timestamp_utc_obj
     )
 

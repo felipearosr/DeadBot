@@ -150,7 +150,6 @@ class RaidManagerBot(commands.Bot):
 
 bot = RaidManagerBot()
 
-# --- User-Facing Slash Commands in bot.py ---
 @bot.tree.command(name="set_payment_char", description="Register or update your payment character and faction.")
 @app_commands.describe(
     payment_alt_name="Your in-game character name for receiving gold (e.g., Altname).",
@@ -165,14 +164,32 @@ async def set_payment_char_command(interaction: discord.Interaction, payment_alt
     user_id = str(interaction.user.id)
     
     bot_instance: RaidManagerBot = interaction.client # type: ignore 
-    bot_instance.alt_mappings[user_id] = {"alt": payment_alt_name.strip(), "faction": faction.value}
-    utils.save_alt_mappings(bot_instance.alt_mappings, config.ALTS_FILE)
 
-    await interaction.followup.send(
-        f"Your payment character has been set/updated to: **{payment_alt_name}** ({faction.name}).",
-        ephemeral=True
-    )
-    print(f"User {interaction.user.name} ({user_id}) set payment char to {payment_alt_name} ({faction.name}).")
+    if not bot_instance.db_pool: # Check if the database pool is available
+        await interaction.followup.send("Database connection is not available at the moment. Please try again later.", ephemeral=True)
+        print("ERROR: set_payment_char_command - db_pool not available.")
+        return
+
+    cleaned_alt_name = payment_alt_name.strip()
+    chosen_faction = faction.value
+
+    try:
+        # Call the new database save function from utils.py
+        await utils.save_alt_to_db(bot_instance.db_pool, user_id, cleaned_alt_name, chosen_faction)
+        
+        # Also update the in-memory cache
+        bot_instance.alt_mappings[user_id] = {"alt": cleaned_alt_name, "faction": chosen_faction}
+
+        await interaction.followup.send(
+            f"Your payment character has been set/updated to: **{cleaned_alt_name}** ({chosen_faction}).",
+            ephemeral=True
+        )
+        print(f"User {interaction.user.name} ({user_id}) set payment char to {cleaned_alt_name} ({chosen_faction}). Saved to DB.")
+    except Exception as e:
+        print(f"ERROR in set_payment_char_command while saving to DB: {e}")
+        import traceback
+        traceback.print_exc()
+        await interaction.followup.send("An error occurred while trying to save your payment character. Please try again.", ephemeral=True)
 
 @bot.tree.command(name="check_payment_alt", description="Check your currently registered payment character.")
 async def check_payment_alt_command(interaction: discord.Interaction):

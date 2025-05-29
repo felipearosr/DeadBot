@@ -272,15 +272,15 @@ async def log_error(interaction: discord.Interaction, error: app_commands.AppCom
         await send_method("An error occurred while generating the log.", ephemeral=True)
 
 # --- /cut command ---
-@bot.tree.command(name="cut", description="Calc gold, log, & optionally generate payment strings. (Admin Only)")
+@bot.tree.command(name="cut", description="Calc gold, log, & generate payment strings. (Admin Only)") # Removed "optionally"
 @app_commands.checks.has_any_role(*config.ALLOWED_ROLES_FOR_ADMIN_CMDS)
 @app_commands.describe(
     run_date="Date of the run (YYYY-MM-DD).",
     warcraft_logs_link="Link to the Warcraft Logs report.",
     total_gold="Total gold amount for the run.",
     roster_file="Upload roster .txt or .csv (Discord IDs in 4th column).",
-    payment_subject="Subject for payment mail (triggers payment string generation).",
-    payment_body="Body for payment mail."
+    payment_subject="Subject for payment mail (e.g., GDKP Payout).", # No longer says OPTIONAL
+    payment_body="Body for payment mail (e.g., Thanks for boosting!)."  # No longer says OPTIONAL
 )
 async def cut_command(
     interaction: discord.Interaction,
@@ -288,11 +288,17 @@ async def cut_command(
     warcraft_logs_link: str,
     total_gold: int,
     roster_file: discord.Attachment,
-    payment_subject: str,
-    payment_body: str
+    payment_subject: str, # Required
+    payment_body: str     # Required
 ):
     await interaction.response.defer(ephemeral=True)
-    bot_instance: RaidManagerBot = interaction.client
+    bot_instance: RaidManagerBot = interaction.client # type: ignore
+
+    # --- DB Pool Check ---
+    if not bot_instance.db_pool:
+        await interaction.followup.send("Database connection is not available at the moment. Please try again later.", ephemeral=True)
+        print("ERROR: cut_command - db_pool not available.")
+        return
 
     # --- Initial Validations ---
     if not utils.is_valid_date(run_date):
@@ -312,7 +318,7 @@ async def cut_command(
         await interaction.followup.send(f"Error reading roster file: {e}", ephemeral=True)
         return
 
-    # current_run_session is still a module-level global for simplicity of this specific data object
+    # current_run_session is a module-level global, used for this specific command's flow
     current_run_session.reset()
     current_run_session.run_date = run_date
     current_run_session.wcl_link = warcraft_logs_link
@@ -326,7 +332,7 @@ async def cut_command(
     current_run_session.active_boosters = active_boosters_with_ids
     current_run_session.benched_players = benched_players_names
 
-    # --- Calculations (using current_run_session) ---
+    # --- Calculations ---
     calculated_raid_leader_share_amount = 0.0
     actual_rl_cut_percentage = 0.0
     rl_config_percentage = getattr(config, 'RAID_LEADER_CUT_PERCENTAGE', 0.0)
@@ -343,44 +349,67 @@ async def cut_command(
     
     remaining_gold_for_boosters = gold_after_rl_cut - guild_share_amount
     gold_per_booster_precise = remaining_gold_for_boosters / len(active_boosters_with_ids) if active_boosters_with_ids else 0
-    gold_per_booster_for_payment = int(gold_per_booster_precise)
+    gold_per_booster_for_payment = int(gold_per_booster_precise) # Gold for mail should be integer
     current_run_session.gold_per_booster = gold_per_booster_precise
     current_run_session.data_loaded = True
 
-    # --- Log Entry ---
-    log_entry = {
-        "run_date": run_date, "wcl_link": warcraft_logs_link, "total_gold": total_gold,
+    # --- Log Entry Preparation ---
+    log_entry_data = {
+        "run_date": run_date, 
+        "wcl_link": warcraft_logs_link, 
+        "total_gold": total_gold,
         "raid_leader_cut_percentage": actual_rl_cut_percentage,
         "raid_leader_share_gold": round(calculated_raid_leader_share_amount, 2),
         "guild_cut_percentage": guild_config_percentage,
         "guild_share_gold": round(guild_share_amount, 2),
         "gold_per_booster": round(gold_per_booster_precise, 2),
         "num_boosters": len(active_boosters_with_ids),
-        "active_boosters": [{"name": n, "discord_id": d} for n, d in active_boosters_with_ids],
-        "benched_players": benched_players_names,
+        # For DB JSONB, we can store the list of tuples/strings directly.
+        # asyncpg will handle JSON serialization for these.
+        "active_boosters": active_boosters_with_ids, 
+        "benched_players": benched_players_names,    
         "processed_by_user_id": str(interaction.user.id),
         "processed_by_username": interaction.user.name,
-        "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat()
+        "timestamp_utc": datetime.datetime.now(datetime.timezone.utc) # Pass datetime object
     }
-    bot_instance.run_logs.append(log_entry) # Use bot instance attribute
-    utils.save_run_logs(bot_instance.run_logs, config.RUN_LOGS_FILE)
-    print(f"Saved log. Total: {len(bot_instance.run_logs)}")
+    
+    try:
+        await utils.save_run_log_entry_to_db(bot_instance.db_pool, log_entry_data)
+        
+        # Update in-memory cache (self.bot.run_logs)
+        # Create a copy to modify for the cache if its structure needs to differ (e.g., for older CSV export logic)
+        cached_log_entry = log_entry_data.copy()
+        # If other parts (like /log CSV export) expect active_boosters as list of dicts:
+        cached_log_entry["active_boosters"] = [{"name": n, "discord_id": d} for n, d in active_boosters_with_ids]
+        # If other parts expect timestamp_utc as ISO string:
+        if isinstance(cached_log_entry["timestamp_utc"], datetime.datetime):
+            cached_log_entry["timestamp_utc"] = cached_log_entry["timestamp_utc"].isoformat()
+        
+        bot_instance.run_logs.append(cached_log_entry) 
+        print(f"Saved run log to DB. Total in-memory logs: {len(bot_instance.run_logs)}")
+    except Exception as e:
+        print(f"ERROR in cut_command while saving run log to DB: {e}")
+        import traceback
+        traceback.print_exc()
+        await interaction.followup.send("An error occurred while saving the run log. The cut was processed, but logging failed.", ephemeral=True)
+        # Consider if processing should halt if logging fails
+        # return 
 
-    # --- Create Public Embed (for Raid Cut Summary - created early, sent later) ---
+    # --- Create Public Embed ---
     public_embed = discord.Embed(title=f"Raid Cut Summary: {run_date}", color=discord.Color.green())
     public_embed.add_field(name="Logs", value=f"[{warcraft_logs_link.split('/')[-1] if '/' in warcraft_logs_link else 'Report'}]({warcraft_logs_link})", inline=False)
-    public_embed.add_field(name="Booster Cut", value=f"{current_run_session.gold_per_booster:,.2f}g", inline=True)
-    public_embed.add_field(name="Num. of Boosters", value=str(len(current_run_session.active_boosters)), inline=True)
-    public_booster_names = [n for n, d in current_run_session.active_boosters]
+    public_embed.add_field(name="Booster Cut", value=f"{gold_per_booster_precise:,.2f}g", inline=True)
+    public_embed.add_field(name="Num. of Boosters", value=str(len(active_boosters_with_ids)), inline=True)
+    public_booster_names = [n for n, d in active_boosters_with_ids]
     public_booster_list_str = "\n".join(public_booster_names)
     if len(public_booster_list_str) > 1020: public_booster_list_str = public_booster_list_str[:1020] + "..."
     public_embed.add_field(name=f"Active Boosters ({len(public_booster_names)})", value=public_booster_list_str or "None", inline=False)
-    public_benched_list_str = "\n".join(current_run_session.benched_players)
+    public_benched_list_str = "\n".join(benched_players_names)
     if len(public_benched_list_str) > 1020: public_benched_list_str = public_benched_list_str[:1020] + "..."
-    public_embed.add_field(name=f"Benched ({len(current_run_session.benched_players)})", value=public_benched_list_str or "None", inline=False)
+    public_embed.add_field(name=f"Benched ({len(benched_players_names)})", value=public_benched_list_str or "None", inline=False)
     public_embed.set_footer(text="Run processed. Admins have detailed view & payment options.")
 
-    # --- Admin Embed (sent as an ephemeral followup) ---
+    # --- Admin Embed ---
     admin_embed = discord.Embed(title=f"ADMIN VIEW - Cut Details: {run_date}", color=discord.Color.gold())
     admin_embed.add_field(name="Logs", value=f"[{warcraft_logs_link.split('/')[-1] if '/' in warcraft_logs_link else 'Report'}]({warcraft_logs_link})", inline=False)
     admin_embed.add_field(name="Total Gold Pot", value=f"{total_gold:,d}g", inline=True)
@@ -392,28 +421,22 @@ async def cut_command(
     admin_embed.add_field(name="Gold for Boosters (Total)", value=f"{remaining_gold_for_boosters:,.2f}g", inline=True)
     admin_embed.add_field(name="Gold/Booster (Precise)", value=f"{gold_per_booster_precise:,.2f}g", inline=True)
     admin_embed.add_field(name="Gold/Booster (Mail)", value=f"{gold_per_booster_for_payment:,d}g", inline=True)
-    admin_booster_details = [f"{name} (ID: `{disc_id}`)" for name, disc_id in current_run_session.active_boosters]
+    admin_booster_details = [f"{name} (ID: `{disc_id}`)" for name, disc_id in active_boosters_with_ids]
     admin_booster_list_str = "\n".join(admin_booster_details)
     if len(admin_booster_list_str) > 1020: admin_booster_list_str = admin_booster_list_str[:1020] + "..."
     admin_embed.add_field(name=f"Active Boosters + IDs ({len(admin_booster_details)})", value=admin_booster_list_str or "None", inline=False)
-    admin_embed.add_field(name=f"Benched ({len(current_run_session.benched_players)})", value=public_benched_list_str or "None", inline=False) # Re-use public_benched_list_str
+    admin_embed.add_field(name=f"Benched ({len(benched_players_names)})", value=public_benched_list_str or "None", inline=False)
     admin_embed.set_footer(text=f"Processed by: {interaction.user.display_name}")
-    await interaction.followup.send(embed=admin_embed, ephemeral=True)
+    await interaction.followup.send(embed=admin_embed, ephemeral=True) # Send Admin details first
 
     # --- Generate Alt/Faction Warnings ---
     admin_alt_warnings_list: List[str] = [] 
     public_warning_ping_list: List[str] = []  
-
-    if active_boosters_with_ids: # From roster parsing
-        # No need to reload alt_mappings here if setup_hook handles it well
-        # if not bot_instance.alt_mappings and os.path.exists(config.ALTS_FILE):
-        #     bot_instance.alt_mappings = utils.load_alt_mappings(config.ALTS_FILE)
-
+    if active_boosters_with_ids:
         for char_name, discord_id in active_boosters_with_ids:
-            alt_info = bot_instance.alt_mappings.get(discord_id)
+            alt_info = bot_instance.alt_mappings.get(discord_id) # From in-memory cache (loaded from DB)
             admin_warning_text = ""
             public_ping_text = ""
-
             if not (alt_info and alt_info.get("alt") and alt_info.get("faction")):
                 admin_warning_text = f"No Alt/Faction registered for ID `{discord_id}` ({char_name})."
                 public_ping_text = f"<@{discord_id}> ({char_name}): Needs to register Alt/Faction (e.g., use `/set_payment_char`)."
@@ -423,83 +446,76 @@ async def cut_command(
                 if alt_faction_lower not in known_factions:
                     admin_warning_text = f"Unknown faction for ID `{discord_id}` ({char_name}). Alt: {alt_info['alt']}, Faction: '{alt_info.get('faction', 'N/A')}'"
                     public_ping_text = f"<@{discord_id}> ({char_name}): Faction '{alt_info.get('faction', 'N/A')}' for alt '{alt_info['alt']}' is not recognized. Please update (e.g., use `/set_payment_char`)."
-            
-            if admin_warning_text:
-                admin_alt_warnings_list.append(admin_warning_text)
-            if public_ping_text:
-                public_warning_ping_list.append(public_ping_text)
+            if admin_warning_text: admin_alt_warnings_list.append(admin_warning_text)
+            if public_ping_text: public_warning_ping_list.append(public_ping_text)
     
-    # --- Payment String Generation (for Admin, if requested) & Ephemeral Warning Send ---
-    payment_followup_sent = False
+    # --- Payment String Generation (for Admin) & Ephemeral Warning Send ---
+    # Since payment_subject and payment_body are required, we always proceed with this block.
     admin_warnings_content_for_ephemeral = ""
     if admin_alt_warnings_list:
         admin_warnings_content_for_ephemeral = "\n\n**Payment/Alt Warnings (for your reference):**\n" + "\n".join(admin_alt_warnings_list)
 
-    if payment_subject and payment_body:
-        admin_payment_strings_content = ""
-        if gold_per_booster_for_payment <= 0 and active_boosters_with_ids:
-            await interaction.followup.send("Gold per booster is 0 or less. No payment strings generated." + admin_warnings_content_for_ephemeral, ephemeral=True)
-            payment_followup_sent = True
-        elif not active_boosters_with_ids: # Should have been caught earlier
-            await interaction.followup.send("No active boosters to generate payments for." + admin_warnings_content_for_ephemeral, ephemeral=True)
-            payment_followup_sent = True
+    admin_payment_strings_content = ""
+    if gold_per_booster_for_payment <= 0 and active_boosters_with_ids:
+        await interaction.followup.send("Gold per booster is 0 or less. No payment strings generated." + admin_warnings_content_for_ephemeral, ephemeral=True)
+    elif not active_boosters_with_ids: 
+        # This case should ideally be caught earlier by the check after parse_roster_data
+        await interaction.followup.send("No active boosters to generate payments for." + admin_warnings_content_for_ephemeral, ephemeral=True)
+    else: # Proceed to generate payment strings
+        horde_salestools_parts: List[str] = []
+        alliance_salestools_parts: List[str] = []
+        for char_name, discord_id in active_boosters_with_ids:
+            alt_info = bot_instance.alt_mappings.get(discord_id)
+            if alt_info and alt_info.get("alt") and alt_info.get("faction"):
+                alt_faction_lower = alt_info['faction'].lower()
+                if alt_faction_lower in ["horde", "alliance"]:
+                    alt_name_for_payment = alt_info['alt']
+                    # Assuming Area52 is the default/target realm for payments
+                    if "-Area52" not in alt_name_for_payment.replace(" ", ""): 
+                        alt_name_for_payment += "-Area52"
+                    salestool_part = f"{alt_name_for_payment}:{payment_subject}:{gold_per_booster_for_payment}:{payment_body}"
+                    if alt_faction_lower == "horde": horde_salestools_parts.append(salestool_part)
+                    elif alt_faction_lower == "alliance": alliance_salestools_parts.append(salestool_part)
+        
+        payment_output_sections = []
+        any_payment_generated = False
+        if horde_salestools_parts: 
+            any_payment_generated = True
+            payment_output_sections.append(f"**Horde SalesTools ({len(horde_salestools_parts)}):**\n```\n" + "\n".join(horde_salestools_parts) + "\n```")
+        else: 
+            payment_output_sections.append("**Horde Payouts:** None.")
+        if alliance_salestools_parts: 
+            any_payment_generated = True
+            payment_output_sections.append(f"**Alliance SalesTools ({len(alliance_salestools_parts)}):**\n```\n" + "\n".join(alliance_salestools_parts) + "\n```")
+        else: 
+            payment_output_sections.append("**Alliance Payouts:** None.")
+        admin_payment_strings_content = "\n\n".join(payment_output_sections)
+
+        # Send payment strings and/or admin warnings
+        if not any_payment_generated and not admin_alt_warnings_list:
+            await interaction.followup.send("Payment: No boosters processed for payment strings and no alt warnings.", ephemeral=True)
         else:
-            horde_salestools_parts: List[str] = []
-            alliance_salestools_parts: List[str] = []
-            for char_name, discord_id in active_boosters_with_ids: # from roster parsing
-                alt_info = bot_instance.alt_mappings.get(discord_id) # Use bot_instance for alts
-                if alt_info and alt_info.get("alt") and alt_info.get("faction"):
-                    alt_faction_lower = alt_info['faction'].lower()
-                    if alt_faction_lower in ["horde", "alliance"]:
-                        alt_name_for_payment = alt_info['alt']
-                        if "-Area52" not in alt_name_for_payment.replace(" ", ""): 
-                            alt_name_for_payment += "-Area52"
-                        salestool_part = f"{alt_name_for_payment}:{payment_subject}:{gold_per_booster_for_payment}:{payment_body}"
-                        if alt_faction_lower == "horde": horde_salestools_parts.append(salestool_part)
-                        elif alt_faction_lower == "alliance": alliance_salestools_parts.append(salestool_part)
-            
-            payment_output_sections = []
-            any_payment_generated = False
-            if horde_salestools_parts: any_payment_generated = True; payment_output_sections.append(f"**Horde SalesTools ({len(horde_salestools_parts)}):**\n```\n" + "\n".join(horde_salestools_parts) + "\n```")
-            else: payment_output_sections.append("**Horde Payouts:** None.")
-            if alliance_salestools_parts: any_payment_generated = True; payment_output_sections.append(f"**Alliance SalesTools ({len(alliance_salestools_parts)}):**\n```\n" + "\n".join(alliance_salestools_parts) + "\n```")
-            else: payment_output_sections.append("**Alliance Payouts:** None.")
-            admin_payment_strings_content = "\n\n".join(payment_output_sections)
-
-            if not any_payment_generated and not admin_alt_warnings_list:
-                await interaction.followup.send("Payment: No boosters processed for payment strings and no alt warnings.", ephemeral=True)
-            else:
-                await utils.send_long_message_or_file(interaction, admin_payment_strings_content, admin_warnings_content_for_ephemeral, "payment_and_warnings_details.txt", ephemeral=True)
-            payment_followup_sent = True
-    elif admin_alt_warnings_list: # No payment subject/body, but warnings exist
-        await utils.send_long_message_or_file(interaction, "No payment strings requested.", admin_warnings_content_for_ephemeral, "alt_warnings.txt", ephemeral=True)
-        payment_followup_sent = True
-    elif payment_subject or payment_body: # Malformed request
-        await interaction.followup.send("To generate payment strings, please provide both `payment_subject` AND `payment_body`." + admin_warnings_content_for_ephemeral, ephemeral=True)
-        payment_followup_sent = True
+            await utils.send_long_message_or_file(interaction, 
+                                            admin_payment_strings_content, 
+                                            admin_warnings_content_for_ephemeral, 
+                                            "payment_and_warnings_details.txt", 
+                                            ephemeral=True)
     
-    if not payment_followup_sent and not (payment_subject and payment_body) and not admin_alt_warnings_list:
-        await interaction.followup.send("Run processing complete. Admin details sent. No payment strings requested and no alt warnings.", ephemeral=True)
-        print("DEBUG: Sent final ephemeral confirmation as no payment actions or warnings.")
-
     # --- Send Public Messages ---
-    public_channel_obj: Optional[discord.TextChannel] = None # Renamed to avoid conflict if public_channel is used elsewhere
+    public_channel_obj: Optional[discord.TextChannel] = None
     target_channel_id = interaction.channel_id
     if target_channel_id:
-        # Use bot_instance (which is interaction.client) to get channel
         _fetched_channel = bot_instance.get_channel(target_channel_id)
-        # ... (rest of channel fetching logic, same as before)
         _source = "bot_instance.get_channel"
         if not _fetched_channel and interaction.guild:
             _fetched_channel = interaction.guild.get_channel(target_channel_id)
             _source = "interaction.guild.get_channel"
-        # interaction.client is bot_instance, so no need for another .client.get_channel
 
         if _fetched_channel and isinstance(_fetched_channel, discord.TextChannel):
             public_channel_obj = _fetched_channel
             print(f"DEBUG: Public channel resolved to '{public_channel_obj.name}' ({public_channel_obj.id}) via {_source}.")
         elif _fetched_channel:
-            print(f"ERROR: Target channel ({target_channel_id}, via {_source}) is not a TextChannel (type: {type(_fetched_channel)}). Name: '{getattr(_fetched_channel, 'name', 'N/A')}'. Cannot send public messages.")
+            print(f"ERROR: Target channel ({target_channel_id}, via {_source}) is not a TextChannel. Cannot send public messages.")
         else:
             print(f"ERROR: Channel with ID {target_channel_id} not found by any method. Cannot send public messages.")
     else:
@@ -510,7 +526,6 @@ async def cut_command(
         try:
             await public_channel_obj.send(embed=public_embed)
             print(f"INFO: Public summary sent successfully to channel {public_channel_obj.name}.")
-        # ... (exception handling for public summary, same as before, ensure public_channel_obj = None on failure) ...
         except discord.Forbidden:
             print(f"ERROR: Bot lacks permission for Public Summary in {public_channel_obj.name}.")
             try: await interaction.followup.send(f"Critical: Failed to send public raid summary to {public_channel_obj.mention} due to permissions.", ephemeral=True)
@@ -521,7 +536,7 @@ async def cut_command(
             try: await interaction.followup.send(f"Critical: An unexpected error occurred sending public raid summary: {e}", ephemeral=True)
             except: pass
             public_channel_obj = None
-    elif not public_channel_obj and target_channel_id: # Check if resolution failed earlier
+    elif not public_channel_obj and target_channel_id:
         try: await interaction.followup.send("Critical: Could not resolve channel to send public messages. Summary/warnings not sent publicly.", ephemeral=True)
         except: pass
     
@@ -532,7 +547,6 @@ async def cut_command(
         full_public_warning_message = f"{public_warnings_title}\n{public_warnings_content_str}"
 
         if len(full_public_warning_message) > 1950:
-            # ... (file sending logic for public warnings, same as before, using public_channel_obj) ...
             warning_output_file = io.StringIO()
             warning_output_file.write(full_public_warning_message)
             warning_output_file.seek(0)
@@ -554,7 +568,7 @@ async def cut_command(
                 print(f"INFO: Public payment warnings (with pings) sent as a message to {public_channel_obj.name}.")
             except discord.Forbidden: print(f"ERROR: Bot lacks permission for Public Warnings (message) in {public_channel_obj.name}.")
             except Exception as e: print(f"ERROR: Unexpected error sending Public Warnings (message): {e}")
-    elif public_warning_ping_list: # Warnings exist but public_channel_obj became invalid
+    elif public_warning_ping_list:
         print("INFO: Public payment warnings (with pings) were generated but could not be sent publicly due to channel issue for summary.")
 
 @cut_command.error

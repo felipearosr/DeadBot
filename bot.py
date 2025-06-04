@@ -501,75 +501,131 @@ async def cut_command(
                                             "payment_and_warnings_details.txt", 
                                             ephemeral=True)
     
-    # --- Send Public Messages ---
-    public_channel_obj: Optional[discord.TextChannel] = None
-    target_channel_id = interaction.channel_id
-    if target_channel_id:
-        _fetched_channel = bot_instance.get_channel(target_channel_id)
-        _source = "bot_instance.get_channel"
-        if not _fetched_channel and interaction.guild:
-            _fetched_channel = interaction.guild.get_channel(target_channel_id)
-            _source = "interaction.guild.get_channel"
+    # --- Determine Target Public Channels ---
+    target_public_channels: List[discord.TextChannel] = []
+    configured_channel_ids_setting = getattr(config, 'PUBLIC_SUMMARY_CHANNEL_IDS', None) # New: Plural IDS
 
-        if _fetched_channel and isinstance(_fetched_channel, discord.TextChannel):
-            public_channel_obj = _fetched_channel
-            print(f"DEBUG: Public channel resolved to '{public_channel_obj.name}' ({public_channel_obj.id}) via {_source}.")
-        elif _fetched_channel:
-            print(f"ERROR: Target channel ({target_channel_id}, via {_source}) is not a TextChannel. Cannot send public messages.")
-        else:
-            print(f"ERROR: Channel with ID {target_channel_id} not found by any method. Cannot send public messages.")
-    else:
-        print(f"ERROR: interaction.channel_id was None. Cannot send public messages.")
+    channel_ids_to_process: List[int] = []
+    source_of_channels = "config (PUBLIC_SUMMARY_CHANNEL_IDS)"
 
-    # 1. Send Public Raid Cut Summary
-    if public_channel_obj:
+    if isinstance(configured_channel_ids_setting, list):
+        if not configured_channel_ids_setting: # Empty list
+            print("INFO: PUBLIC_SUMMARY_CHANNEL_IDS is configured as an empty list. No public messages will be sent via config.")
+        for item in configured_channel_ids_setting:
+            try:
+                channel_ids_to_process.append(int(item))
+            except (ValueError, TypeError):
+                print(f"WARNING: Invalid channel ID '{item}' in PUBLIC_SUMMARY_CHANNEL_IDS list. Skipping.")
+    elif isinstance(configured_channel_ids_setting, (str, int)): # Single ID provided
         try:
-            await public_channel_obj.send(embed=public_embed)
-            print(f"INFO: Public summary sent successfully to channel {public_channel_obj.name}.")
-        except discord.Forbidden:
-            print(f"ERROR: Bot lacks permission for Public Summary in {public_channel_obj.name}.")
-            try: await interaction.followup.send(f"Critical: Failed to send public raid summary to {public_channel_obj.mention} due to permissions.", ephemeral=True)
-            except: pass 
-            public_channel_obj = None 
-        except Exception as e:
-            print(f"ERROR: Unexpected error sending Public Summary: {e}")
-            try: await interaction.followup.send(f"Critical: An unexpected error occurred sending public raid summary: {e}", ephemeral=True)
-            except: pass
-            public_channel_obj = None
-    elif not public_channel_obj and target_channel_id:
-        try: await interaction.followup.send("Critical: Could not resolve channel to send public messages. Summary/warnings not sent publicly.", ephemeral=True)
-        except: pass
-    
-    # 2. Send Public Payment Warnings
-    if public_channel_obj and public_warning_ping_list:
-        public_warnings_title = "**⚠️ Public Alt/Faction Warnings**"
-        public_warnings_content_str = "\n".join(public_warning_ping_list) 
-        full_public_warning_message = f"{public_warnings_title}\n{public_warnings_content_str}"
-
-        if len(full_public_warning_message) > 1950:
-            warning_output_file = io.StringIO()
-            warning_output_file.write(full_public_warning_message)
-            warning_output_file.seek(0)
-            try:
-                await public_channel_obj.send(
-                    f"{public_warnings_title}\n(List too long, warnings with pings attached as `payment_warnings.txt`)",
-                    file=discord.File(fp=warning_output_file, filename="payment_warnings.txt"),
-                    allowed_mentions=discord.AllowedMentions(users=True) 
-                )
-                print(f"INFO: Public payment warnings (with pings) sent as a file to {public_channel_obj.name}.")
-            except discord.Forbidden: print(f"ERROR: Bot lacks permission for Public Warnings (file) in {public_channel_obj.name}.")
-            except Exception as e: print(f"ERROR: Unexpected error sending Public Warnings (file): {e}")
+            channel_ids_to_process.append(int(configured_channel_ids_setting))
+        except (ValueError, TypeError):
+            print(f"WARNING: Invalid PUBLIC_SUMMARY_CHANNEL_IDS value '{configured_channel_ids_setting}'. Skipping.")
+    elif configured_channel_ids_setting is None: # Not defined in config, fallback to interaction channel
+        source_of_channels = "interaction.channel_id (fallback)"
+        if interaction.channel_id:
+            channel_ids_to_process.append(interaction.channel_id)
+            print(f"DEBUG: PUBLIC_SUMMARY_CHANNEL_IDS not found in config. Using interaction channel ({interaction.channel_id}).")
         else:
-            try:
-                await public_channel_obj.send(
-                    full_public_warning_message,
-                    allowed_mentions=discord.AllowedMentions(users=True)
+            print("ERROR: PUBLIC_SUMMARY_CHANNEL_IDS not in config and interaction.channel_id is None. Cannot determine public channel.")
+    else: # Configured setting is of an unexpected type
+        print(f"WARNING: PUBLIC_SUMMARY_CHANNEL_IDS is an unexpected type ({type(configured_channel_ids_setting)}). Expected list, int, str, or None. No public messages sent via config.")
+
+    for channel_id_val in channel_ids_to_process:
+        _channel = bot_instance.get_channel(channel_id_val) # get_channel is global for all guilds bot is in
+        if _channel and isinstance(_channel, discord.TextChannel):
+            target_public_channels.append(_channel)
+            print(f"DEBUG: Resolved public summary channel: '{_channel.name}' ({_channel.id}) from ID {channel_id_val} (source: {source_of_channels}).")
+        elif _channel:
+            print(f"ERROR: Channel ID {channel_id_val} from {source_of_channels} is not a TextChannel (type: {type(_channel)}). Skipping.")
+        else:
+            print(f"ERROR: Channel ID {channel_id_val} from {source_of_channels} not found or bot lacks access. Skipping.")
+
+    if not target_public_channels:
+        if configured_channel_ids_setting is not None and (isinstance(configured_channel_ids_setting, (list, str, int)) and configured_channel_ids_setting): # Config was provided but all failed or was non-empty invalid
+            try: 
+                await interaction.followup.send(
+                    "Warning: Could not resolve or access any of the specified PUBLIC_SUMMARY_CHANNEL_IDS. Public messages not sent to configured channels.", 
+                    ephemeral=True
                 )
-                print(f"INFO: Public payment warnings (with pings) sent as a message to {public_channel_obj.name}.")
-            except discord.Forbidden: print(f"ERROR: Bot lacks permission for Public Warnings (message) in {public_channel_obj.name}.")
-            except Exception as e: print(f"ERROR: Unexpected error sending Public Warnings (message): {e}")
-    elif public_warning_ping_list:
-        print("INFO: Public payment warnings (with pings) were generated but could not be sent publicly due to channel issue for summary.")
+            except Exception as e_followup: print(f"Error sending followup for channel resolution failure: {e_followup}")
+        elif configured_channel_ids_setting is None and not interaction.channel_id: # Fallback also failed
+             try: 
+                await interaction.followup.send("Critical: Could not resolve interaction channel (fallback) to send public messages. Summary/warnings not sent publicly.", ephemeral=True)
+             except Exception as e_followup: print(f"Error sending followup for fallback channel failure: {e_followup}")
+        else:
+            # Covers cases like empty list in config, or fallback to interaction channel which is then resolved (but loop below won't run if target_public_channels is still empty)
+            print("INFO: No target channels resolved for public messages after processing config and fallbacks.")
+            
+    # --- Send Public Messages to Resolved Channels ---
+    if not target_public_channels:
+        print("INFO: No public channels to send messages to.")
+    else:
+        sent_to_at_least_one_channel = False
+        print(f"INFO: Attempting to send public messages to {len(target_public_channels)} channel(s).")
+
+        for P_channel_obj in target_public_channels: # Renamed to avoid conflict if any
+            channel_name_for_log = f"{P_channel_obj.name} ({P_channel_obj.id})"
+            # 1. Send Public Raid Cut Summary
+            try:
+                await P_channel_obj.send(embed=public_embed)
+                print(f"INFO: Public summary sent successfully to channel {channel_name_for_log}.")
+                sent_to_at_least_one_channel = True
+            except discord.Forbidden:
+                print(f"ERROR: Bot lacks permission for Public Summary in {channel_name_for_log}.")
+                if configured_channel_ids_setting is not None: # Inform admin if this was a *configured* channel
+                    try: await interaction.followup.send(f"Warning: Failed to send public raid summary to {P_channel_obj.mention} due to permissions.", ephemeral=True)
+                    except: pass 
+            except Exception as e_ps:
+                print(f"ERROR: Unexpected error sending Public Summary to {channel_name_for_log}: {e_ps}")
+                if configured_channel_ids_setting is not None:
+                    try: await interaction.followup.send(f"Warning: An unexpected error occurred sending public raid summary to {P_channel_obj.mention}: {e_ps}", ephemeral=True)
+                    except: pass
+            
+            # 2. Send Public Payment Warnings (if any)
+            if public_warning_ping_list:
+                public_warnings_title = "**⚠️ Public Alt/Faction Warnings**"
+                public_warnings_content_str = "\n".join(public_warning_ping_list) 
+                full_public_warning_message = f"{public_warnings_title}\n{public_warnings_content_str}"
+
+                if len(full_public_warning_message) > 1950: # Discord message limit is 2000
+                    warning_output_file = io.StringIO()
+                    warning_output_file.write(full_public_warning_message.replace("\\n", "\n")) # Correct newlines for file
+                    warning_output_file.seek(0)
+                    try:
+                        await P_channel_obj.send(
+                            f"{public_warnings_title}\n(List too long, warnings with pings attached as `payment_warnings.txt`)",
+                            file=discord.File(fp=warning_output_file, filename="payment_warnings.txt"),
+                            allowed_mentions=discord.AllowedMentions(users=True) 
+                        )
+                        print(f"INFO: Public payment warnings (with pings) sent as a file to {channel_name_for_log}.")
+                        sent_to_at_least_one_channel = True 
+                    except discord.Forbidden: print(f"ERROR: Bot lacks permission for Public Warnings (file) in {channel_name_for_log}.")
+                    except Exception as e_pwf: print(f"ERROR: Unexpected error sending Public Warnings (file) to {channel_name_for_log}: {e_pwf}")
+                    finally: warning_output_file.close()
+                else:
+                    try:
+                        await P_channel_obj.send(
+                            full_public_warning_message,
+                            allowed_mentions=discord.AllowedMentions(users=True)
+                        )
+                        print(f"INFO: Public payment warnings (with pings) sent as a message to {channel_name_for_log}.")
+                        sent_to_at_least_one_channel = True
+                    except discord.Forbidden: print(f"ERROR: Bot lacks permission for Public Warnings (message) in {channel_name_for_log}.")
+                    except Exception as e_pwm: print(f"ERROR: Unexpected error sending Public Warnings (message) to {channel_name_for_log}: {e_pwm}")
+            elif public_warning_ping_list and not sent_to_at_least_one_channel: # Warnings existed, but no channel was suitable for *any* message yet
+                # This specific log might be redundant if the initial "No public channels to send messages to" or resolution errors covered it.
+                # However, if summary failed but warnings could theoretically go, this might be relevant.
+                # For simplicity, this specific log can be removed if other logs are clear.
+                pass # Covered by general channel failure logs
+
+        if not sent_to_at_least_one_channel and target_public_channels:
+             print(f"INFO: Although {len(target_public_channels)} channel(s) were resolved, no public messages (summary or warnings) were successfully sent due to errors/permissions.")
+        elif not sent_to_at_least_one_channel and not target_public_channels and public_warning_ping_list:
+            # This case means: No channels resolved AND there were warnings to send.
+            # The "No target channels resolved for public messages..." log and potentially an ephemeral already covered the channel part.
+            print("INFO: Public payment warnings were generated but could not be sent publicly as no channels were resolved/accessible.")
+
 
 @cut_command.error
 async def cut_error(interaction: discord.Interaction, error: app_commands.AppCommandError):

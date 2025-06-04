@@ -428,13 +428,6 @@ async def cut_command(
     admin_embed.add_field(name=f"Benched ({len(benched_players_names)})", value=public_benched_list_str or "None", inline=False)
     admin_embed.set_footer(text=f"Processed by: {interaction.user.display_name}")
     await interaction.followup.send(embed=admin_embed, ephemeral=True) # Send Admin details first
-    try:
-        await interaction.user.send(embed=admin_embed)
-        print(f"INFO: Admin summary embed also sent via DM to {interaction.user.name}.")
-    except discord.Forbidden:
-        print(f"WARNING: Could not DM admin summary embed to {interaction.user.name} (DMs may be disabled). Ephemeral message sent.")
-    except Exception as e_dm_admin_embed:
-        print(f"ERROR: Failed to DM admin summary embed to {interaction.user.name}: {e_dm_admin_embed}. Ephemeral message sent.")
 
     # --- Generate Alt/Faction Warnings ---
     admin_alt_warnings_list: List[str] = [] 
@@ -464,47 +457,10 @@ async def cut_command(
 
     admin_payment_strings_content = ""
     if gold_per_booster_for_payment <= 0 and active_boosters_with_ids:
-        ephemeral_msg_content = "Gold per booster is 0 or less. No payment strings generated." + admin_warnings_content_for_ephemeral
-        await interaction.followup.send(ephemeral_msg_content, ephemeral=True)
-        try:
-            dm_msg_content = "Gold per booster is 0 or less. No payment strings generated."
-            if admin_alt_warnings_list: # Check based on the original list
-                dm_msg_content += admin_warnings_content_for_ephemeral # This string has its own formatting
-            
-            if len(dm_msg_content) <= 2000:
-                await interaction.user.send(dm_msg_content)
-            else:
-                with io.StringIO(dm_msg_content) as dm_file_content_io:
-                    await interaction.user.send(
-                        "Gold per booster is 0 or less. No payment strings generated. Details/warnings attached due to length.",
-                        file=discord.File(fp=dm_file_content_io, filename="admin_zerogold_warnings_dm.txt")
-                    )
-            print(f"INFO: 'Zero gold' message and warnings also sent via DM to {interaction.user.name}.")
-        except discord.Forbidden:
-            print(f"WARNING: Could not DM 'Zero gold' message/warnings to {interaction.user.name}.")
-        except Exception as e_dm_zero_gold:
-            print(f"ERROR: Failed to DM 'Zero gold' message/warnings to {interaction.user.name}: {e_dm_zero_gold}")
+        await interaction.followup.send("Gold per booster is 0 or less. No payment strings generated." + admin_warnings_content_for_ephemeral, ephemeral=True)
     elif not active_boosters_with_ids: 
-        ephemeral_msg_content = "No active boosters to generate payments for." + admin_warnings_content_for_ephemeral
-        await interaction.followup.send(ephemeral_msg_content, ephemeral=True)
-        try:
-            dm_msg_content = "No active boosters to generate payments for."
-            if admin_alt_warnings_list: # Check based on the original list
-                 dm_msg_content += admin_warnings_content_for_ephemeral
-            
-            if len(dm_msg_content) <= 2000:
-                await interaction.user.send(dm_msg_content)
-            else:
-                with io.StringIO(dm_msg_content) as dm_file_content_io:
-                    await interaction.user.send(
-                        "No active boosters to generate payments for. Details/warnings attached due to length.",
-                        file=discord.File(fp=dm_file_content_io, filename="admin_no_boosters_warnings_dm.txt")
-                    )
-            print(f"INFO: 'No active boosters' message and warnings also sent via DM to {interaction.user.name}.")
-        except discord.Forbidden:
-            print(f"WARNING: Could not DM 'No active boosters' message/warnings to {interaction.user.name}.")
-        except Exception as e_dm_no_boosters:
-            print(f"ERROR: Failed to DM 'No active boosters' message/warnings to {interaction.user.name}: {e_dm_no_boosters}")
+        # This case should ideally be caught earlier by the check after parse_roster_data
+        await interaction.followup.send("No active boosters to generate payments for." + admin_warnings_content_for_ephemeral, ephemeral=True)
     else: # Proceed to generate payment strings
         horde_salestools_parts: List[str] = []
         alliance_salestools_parts: List[str] = []
@@ -537,60 +493,13 @@ async def cut_command(
 
         # Send payment strings and/or admin warnings
         if not any_payment_generated and not admin_alt_warnings_list:
-            ephemeral_status_message = "Payment: No boosters processed for payment strings and no alt warnings."
-            await interaction.followup.send(ephemeral_status_message, ephemeral=True)
-            try:
-                await interaction.user.send(ephemeral_status_message)
-                print(f"INFO: Status message '{ephemeral_status_message}' DMed to {interaction.user.name}.")
-            except discord.Forbidden:
-                print(f"WARNING: Could not DM status message to {interaction.user.name}.")
-            except Exception as e_dm_status:
-                print(f"ERROR: Failed to DM status message to {interaction.user.name}: {e_dm_status}")
+            await interaction.followup.send("Payment: No boosters processed for payment strings and no alt warnings.", ephemeral=True)
         else:
-            # This 'else' means there's something to report: either payment strings, or warnings, or both.
-            # Send ephemerally (existing method)
-            await utils.send_long_message_or_file(
-                interaction, 
-                admin_payment_strings_content, 
-                admin_warnings_content_for_ephemeral, # utils.send_long_message_or_file handles combining these.
-                "payment_and_warnings_details.txt", 
-                ephemeral=True
-            )
-
-            # Prepare content for DM
-            dm_content_for_dm = ""
-            # Add payment strings content if it's not just "None" placeholders or empty
-            if any_payment_generated: # Checks if horde_salestools_parts or alliance_salestools_parts had items
-                dm_content_for_dm += admin_payment_strings_content
-            
-            if admin_alt_warnings_list: # If there are warnings
-                if dm_content_for_dm.strip() and any_payment_generated: 
-                    # If payment strings were added and had content, warnings follow with their own newlines
-                    dm_content_for_dm += admin_warnings_content_for_ephemeral # This starts with "
-
-**..."
-                else: # Only warnings are present, or payment strings were "None" placeholders
-                    dm_content_for_dm += admin_warnings_content_for_ephemeral.lstrip() # Remove leading whitespace if it's the primary content
-
-            dm_intro = "Admin payment/warning details (also sent ephemerally):"
-            if not dm_content_for_dm.strip(): # Safeguard: if content is still empty
-                print(f"INFO: DM for payment details for {interaction.user.name} was effectively empty after construction, skipping specific DM for this part.")
-            else:
-                try:
-                    # Check length against Discord's message limit (2000 chars)
-                    if len(dm_intro + "\n" + dm_content_for_dm) <= 2000:
-                        await interaction.user.send(f"{dm_intro}\n{dm_content_for_dm}")
-                    else:
-                        with io.StringIO(dm_content_for_dm) as dm_file_io:
-                            await interaction.user.send(
-                                f"{dm_intro} (Details attached as file due to length)",
-                                file=discord.File(fp=dm_file_io, filename="admin_payment_and_warnings_dm.txt")
-                            )
-                    print(f"INFO: Admin payment/warning details also DMed to {interaction.user.name}.")
-                except discord.Forbidden:
-                    print(f"WARNING: Could not DM admin payment/warning details to {interaction.user.name}.")
-                except Exception as e_dm_details:
-                    print(f"ERROR: Failed to DM admin payment/warning details to {interaction.user.name}: {e_dm_details}")
+            await utils.send_long_message_or_file(interaction, 
+                                            admin_payment_strings_content, 
+                                            admin_warnings_content_for_ephemeral, 
+                                            "payment_and_warnings_details.txt", 
+                                            ephemeral=True)
     
     # --- Determine Target Public Channels ---
     target_public_channels: List[discord.TextChannel] = []

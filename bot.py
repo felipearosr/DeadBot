@@ -473,7 +473,7 @@ async def cut_command(
                     # Assuming Area52 is the default/target realm for payments
                     if "-Area52" not in alt_name_for_payment.replace(" ", ""): 
                         alt_name_for_payment += "-Area52"
-                    salestool_part = f"{alt_name_for_payment}:{payment_subject}:{gold_per_booster_for_payment}:{payment_body}"
+                    salestool_part = f"{alt_name_for_payment}:{gold_per_booster_for_payment}:{payment_subject}:{payment_body}"
                     if alt_faction_lower == "horde": horde_salestools_parts.append(salestool_part)
                     elif alt_faction_lower == "alliance": alliance_salestools_parts.append(salestool_part)
         

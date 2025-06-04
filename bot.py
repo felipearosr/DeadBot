@@ -503,59 +503,76 @@ async def cut_command(
     
     # --- Determine Target Public Channels ---
     target_public_channels: List[discord.TextChannel] = []
-    configured_channel_ids_setting = getattr(config, 'PUBLIC_SUMMARY_CHANNEL_IDS', None) # New: Plural IDS
+    configured_channel_ids_setting = getattr(config, 'PUBLIC_SUMMARY_CHANNEL_IDS', None)
 
     channel_ids_to_process: List[int] = []
     source_of_channels = "config (PUBLIC_SUMMARY_CHANNEL_IDS)"
+    current_guild_id = interaction.guild_id # Get the guild ID where the command was run
 
     if isinstance(configured_channel_ids_setting, list):
-        if not configured_channel_ids_setting: # Empty list
-            print("INFO: PUBLIC_SUMMARY_CHANNEL_IDS is configured as an empty list. No public messages will be sent via config.")
+        if not configured_channel_ids_setting:
+            print("INFO: PUBLIC_SUMMARY_CHANNEL_IDS is configured as an empty list. No public messages will be sent via config for this run.")
         for item in configured_channel_ids_setting:
             try:
                 channel_ids_to_process.append(int(item))
             except (ValueError, TypeError):
                 print(f"WARNING: Invalid channel ID '{item}' in PUBLIC_SUMMARY_CHANNEL_IDS list. Skipping.")
-    elif isinstance(configured_channel_ids_setting, (str, int)): # Single ID provided
+    elif isinstance(configured_channel_ids_setting, (str, int)):
         try:
             channel_ids_to_process.append(int(configured_channel_ids_setting))
         except (ValueError, TypeError):
             print(f"WARNING: Invalid PUBLIC_SUMMARY_CHANNEL_IDS value '{configured_channel_ids_setting}'. Skipping.")
-    elif configured_channel_ids_setting is None: # Not defined in config, fallback to interaction channel
+    elif configured_channel_ids_setting is None: # Fallback to interaction channel
         source_of_channels = "interaction.channel_id (fallback)"
         if interaction.channel_id:
             channel_ids_to_process.append(interaction.channel_id)
-            print(f"DEBUG: PUBLIC_SUMMARY_CHANNEL_IDS not found in config. Using interaction channel ({interaction.channel_id}).")
-        else:
-            print("ERROR: PUBLIC_SUMMARY_CHANNEL_IDS not in config and interaction.channel_id is None. Cannot determine public channel.")
-    else: # Configured setting is of an unexpected type
-        print(f"WARNING: PUBLIC_SUMMARY_CHANNEL_IDS is an unexpected type ({type(configured_channel_ids_setting)}). Expected list, int, str, or None. No public messages sent via config.")
+            print(f"DEBUG: PUBLIC_SUMMARY_CHANNEL_IDS not in config. Using interaction channel ({interaction.channel_id}) for server {current_guild_id}.")
+        elif current_guild_id: # Has guild context, but no specific channel_id from interaction (should be rare for slash commands)
+            print(f"ERROR: PUBLIC_SUMMARY_CHANNEL_IDS not in config, and interaction.channel_id is None, but guild context ({current_guild_id}) exists. Cannot determine fallback channel.")
+        else: # No guild context and no channel_id from interaction (e.g. DM context, though less likely for this command)
+            print("ERROR: PUBLIC_SUMMARY_CHANNEL_IDS not in config and no interaction channel/guild context. Cannot determine public channel.")
+    else:
+        print(f"WARNING: PUBLIC_SUMMARY_CHANNEL_IDS is an unexpected type ({type(configured_channel_ids_setting)}). No public messages sent via config.")
+
+    if not current_guild_id and channel_ids_to_process and configured_channel_ids_setting is not None:
+        print(f"WARNING: Command used outside of a server (guild_id is None), but PUBLIC_SUMMARY_CHANNEL_IDS is configured. Cannot filter by server, so no public messages will be sent from config to avoid cross-server leakage.")
+        channel_ids_to_process = [] # Clear it to prevent sending to all configured channels if not in a guild
 
     for channel_id_val in channel_ids_to_process:
-        _channel = bot_instance.get_channel(channel_id_val) # get_channel is global for all guilds bot is in
+        _channel = bot_instance.get_channel(channel_id_val)
         if _channel and isinstance(_channel, discord.TextChannel):
-            target_public_channels.append(_channel)
-            print(f"DEBUG: Resolved public summary channel: '{_channel.name}' ({_channel.id}) from ID {channel_id_val} (source: {source_of_channels}).")
+            if _channel.guild and _channel.guild.id == current_guild_id:
+                target_public_channels.append(_channel)
+                print(f"DEBUG: Resolved public channel for current server ({current_guild_id}): '{_channel.name}' ({_channel.id}) from ID {channel_id_val} (source: {source_of_channels}).")
+            elif not _channel.guild:
+                 print(f"DEBUG: Configured channel '{_channel.name}' ({_channel.id}) is a DM or group channel, not in a server. Skipping for guild-specific announcements.")
+            elif current_guild_id: # Channel is in a guild, but a different one
+                print(f"DEBUG: Configured channel '{_channel.name}' ({_channel.id}) in server {_channel.guild.id} does not match current server {current_guild_id}. Skipping.")
+            # If current_guild_id was None but we somehow still processed a channel_id (e.g. from fallback interaction.channel_id which was a DM), this logic is okay.
         elif _channel:
-            print(f"ERROR: Channel ID {channel_id_val} from {source_of_channels} is not a TextChannel (type: {type(_channel)}). Skipping.")
+            print(f"ERROR: Configured channel ID {channel_id_val} (source: {source_of_channels}) is not a TextChannel (type: {type(_channel)}). Skipping.")
         else:
-            print(f"ERROR: Channel ID {channel_id_val} from {source_of_channels} not found or bot lacks access. Skipping.")
+            print(f"ERROR: Configured channel ID {channel_id_val} (source: {source_of_channels}) not found or bot lacks access. Skipping.")
 
     if not target_public_channels:
-        if configured_channel_ids_setting is not None and (isinstance(configured_channel_ids_setting, (list, str, int)) and configured_channel_ids_setting): # Config was provided but all failed or was non-empty invalid
-            try: 
-                await interaction.followup.send(
-                    "Warning: Could not resolve or access any of the specified PUBLIC_SUMMARY_CHANNEL_IDS. Public messages not sent to configured channels.", 
-                    ephemeral=True
-                )
-            except Exception as e_followup: print(f"Error sending followup for channel resolution failure: {e_followup}")
-        elif configured_channel_ids_setting is None and not interaction.channel_id: # Fallback also failed
+        # This message covers cases where config was provided but no channels matched the current server, or config was empty/invalid.
+        # It also covers if fallback to interaction channel failed (e.g. interaction.channel_id was None).
+        if configured_channel_ids_setting is not None and configured_channel_ids_setting != [] : # Config was set and non-empty
+            if current_guild_id: # And we are in a server context
+                try: 
+                    await interaction.followup.send(
+                        f"Warning: PUBLIC_SUMMARY_CHANNEL_IDS is configured, but no specified channels were found or accessible in the current server (ID: {current_guild_id}). Public messages not sent to configured channels for this server.", 
+                        ephemeral=True
+                    )
+                except Exception as e_followup: print(f"Error sending followup for channel resolution failure: {e_followup}")
+            # If not in a guild context but config was set, previous log about clearing channel_ids_to_process covers it.
+        elif configured_channel_ids_setting is None and not interaction.channel_id:
+             # This means fallback to interaction channel also failed because interaction.channel_id was None.
              try: 
-                await interaction.followup.send("Critical: Could not resolve interaction channel (fallback) to send public messages. Summary/warnings not sent publicly.", ephemeral=True)
+                await interaction.followup.send("Critical: Could not determine a channel to send public messages. Summary/warnings not sent publicly.", ephemeral=True)
              except Exception as e_followup: print(f"Error sending followup for fallback channel failure: {e_followup}")
         else:
-            # Covers cases like empty list in config, or fallback to interaction channel which is then resolved (but loop below won't run if target_public_channels is still empty)
-            print("INFO: No target channels resolved for public messages after processing config and fallbacks.")
+             print("INFO: No target channels resolved for public messages after processing config and fallbacks for the current server.")
             
     # --- Send Public Messages to Resolved Channels ---
     if not target_public_channels:

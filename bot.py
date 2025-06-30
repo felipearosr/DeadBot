@@ -357,7 +357,7 @@ async def cut_command(
     current_run_session.total_gold = total_gold
     current_run_session.roster_raw = roster_data_string
 
-    active_boosters_with_ids, benched_players_names = utils.parse_roster_data(roster_data_string)
+    run_date_from_csv, active_boosters_with_ids, benched_players_names = utils.parse_roster_data(roster_data_string)
     if not active_boosters_with_ids:
         await interaction.followup.send("No active boosters found in the roster. Please check the file format and content.", ephemeral=True)
         return

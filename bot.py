@@ -334,15 +334,11 @@ async def cut_command(
         return
 
     # --- Call the new parser which returns THREE values ---
-    run_date_from_csv, active_boosters_with_ids, benched_players_names = utils.parse_roster_data(roster_data_string)
-    
+    run_date_from_csv, active_boosters_with_ids, benched_players_names = utils.parse_roster_data(roster_data_string)    
     # --- CRUCIAL: Check if the date was found ---
     if not run_date_from_csv:
-        await interaction.followup.send(
-            "**Error:** Could not automatically detect the run date from the CSV file. "
-            "Please ensure the file was exported from Raid-Helper and includes the event summary section at the top.",
-            ephemeral=True
-        )
+        # Handle the error if the date wasn't found
+        await interaction.followup.send("Error: Could not find the run date in the CSV.", ephemeral=True)
         return
 
     # --- NEW LOGIC TO HANDLE OPTIONAL PARAMETERS ---

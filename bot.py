@@ -295,7 +295,6 @@ async def log_error(interaction: discord.Interaction, error: app_commands.AppCom
 @bot.tree.command(name="cut", description="Calc gold, log, & generate payment strings. (Admin Only)") # Removed "optionally"
 @app_commands.checks.has_any_role(*config.ALLOWED_ROLES_FOR_ADMIN_CMDS)
 @app_commands.describe(
-    run_date="Date of the run (YYYY-MM-DD).",
     warcraft_logs_link="Link to the Warcraft Logs report.",
     total_gold="Total gold amount for the run.",
     roster_file="Upload roster .txt or .csv (Discord IDs in 4th column).",

@@ -8,6 +8,8 @@ import json # Potentially needed by /cut for log_entry formatting before DB
 import datetime
 from typing import List, Dict, Tuple, Optional 
 import asyncpg # For database interactions
+import asyncio  # <-- Make sure this is here
+import logging  # <-- Add this for better logs
 
 import config # Your configuration file
 import utils  # Your utility functions
@@ -45,48 +47,66 @@ class RaidManagerBot(commands.Bot):
         self.run_logs: List[Dict] = []
 
     async def setup_hook(self):
-        # --- DATABASE CONNECTION AND INITIAL DATA LOAD ---
-        try:
-            # Ensure DATABASE_URL is correctly set in config and environment
-            if not config.DATABASE_URL or "db_fallback_local_dev" in config.DATABASE_URL:
-                raise ConnectionError("DATABASE_URL is not properly configured.")
+        # --- DATABASE CONNECTION AND INITIAL DATA LOAD (WITH RETRY LOGIC) ---
+        max_retries = 5
+        retry_delay = 5  # Increased to 5 seconds for a safer margin
 
-            self.db_pool = await asyncpg.create_pool(dsn=config.DATABASE_URL, min_size=1, max_size=10)
-            if self.db_pool:
-                print("Successfully connected to PostgreSQL and created connection pool.")
-                await utils.setup_database_tables(self.db_pool) # Create tables if they don't exist
+        for attempt in range(max_retries):
+            try:
+                # Ensure DATABASE_URL is correctly set in config and environment
+                if not config.DATABASE_URL or "db_fallback_local_dev" in config.DATABASE_URL:
+                    raise ConnectionError("DATABASE_URL is not properly configured.")
+
+                logging.info(f"Attempting to connect to the database (Attempt {attempt + 1}/{max_retries})...")
+                # Create the connection pool. A timeout is added to each connection attempt.
+                self.db_pool = await asyncpg.create_pool(
+                    dsn=config.DATABASE_URL, 
+                    min_size=1, 
+                    max_size=10,
+                    timeout=15 # Timeout for an individual connection attempt
+                )
                 
-                # Load initial data from DB into memory using DB-specific functions
-                self.alt_mappings = await utils.load_all_alt_mappings_from_db(self.db_pool)
-                self.run_logs = await utils.load_all_run_logs_from_db(self.db_pool) # Loads all, consider if this gets too large
-                print(f"Loaded {len(self.alt_mappings)} alts and {len(self.run_logs)} logs from database.")
-            else:
-                # This case should ideally not be reached if create_pool fails; it would raise an exception.
-                print("ERROR: Database pool creation unexpectedly returned None. Bot may not function correctly.")
-        except ConnectionRefusedError:
-            print(f"CRITICAL ERROR: Connection to PostgreSQL database was refused. Check if DB is running and accessible at: {config.DATABASE_URL}")
-            print("Bot will continue without database functionality where possible, but data persistence will fail.")
-        except asyncpg.exceptions.InvalidPasswordError:
-            print(f"CRITICAL ERROR: Invalid password for PostgreSQL database. Check DATABASE_URL.")
-            print("Bot will continue without database functionality where possible, but data persistence will fail.")
-        except Exception as e_db_setup:
-            print(f"CRITICAL ERROR: Failed to connect to PostgreSQL or setup database: {e_db_setup}")
-            import traceback
-            traceback.print_exc()
-            print("Bot will attempt to continue without database functionality for some commands, but data persistence will fail.")
+                if self.db_pool:
+                    logging.info("✅ Successfully connected to PostgreSQL and created connection pool.")
+                    await utils.setup_database_tables(self.db_pool)  # Create tables if they don't exist
+                    
+                    # Load initial data from DB into memory
+                    self.alt_mappings = await utils.load_all_alt_mappings_from_db(self.db_pool)
+                    self.run_logs = await utils.load_all_run_logs_from_db(self.db_pool)
+                    logging.info(f"Loaded {len(self.alt_mappings)} alts and {len(self.run_logs)} logs from database.")
+                    
+                    break  # --- IMPORTANT: Exit the loop on success ---
+
+            except Exception as e_db_setup:
+                logging.warning(f"⚠️ Database connection failed on attempt {attempt + 1}: {e_db_setup}")
+                if attempt < max_retries - 1:
+                    logging.info(f"Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                else:
+                    logging.critical("❌ Could not establish database connection after all retries.")
+                    import traceback
+                    traceback.print_exc()
+                    self.db_pool = None # Ensure pool is None on final failure
+        
         # --- END DATABASE SETUP ---
 
-        # Load extensions (cogs)
+        # If the db_pool is still None, we print a final status warning
+        if not self.db_pool:
+            logging.error("Bot will continue without database functionality. Data persistence will fail.")
+
+        # Load extensions (cogs) - this now runs after the database attempts are complete
         for extension in self.initial_extensions:
             try:
-                await self.load_extension(extension) # Loads cogs like admin_char_cmds.py
-                print(f"Successfully loaded extension: {extension}")
+                await self.load_extension(extension)
+                logging.info(f"Successfully loaded extension: {extension}")
             except Exception as e_load_ext:
-                print(f"Failed to load extension {extension}: {e_load_ext}")
+                logging.error(f"Failed to load extension {extension}: {e_load_ext}")
                 import traceback
                 traceback.print_exc()
 
-        # --- COMMAND SYNCING ---
+        # --- COMMAND SYNCING (Your existing code is good) ---
+        logging.info("Proceeding with command syncing...")
+        # (Your command syncing logic remains here, unchanged)
         # Set these flags to False after their one-time run to clear commands.
         CLEAR_GLOBAL_COMMANDS_ONCE = False 
         CLEAR_TARGET_GUILD_COMMANDS_ONCE = False 
@@ -118,7 +138,7 @@ class RaidManagerBot(commands.Bot):
                     synced_commands = await self.tree.sync(guild=guild_obj)
                     print(f"Synced {len(synced_commands)} application commands to guild {guild_id}.")
                 except discord.errors.Forbidden:
-                     print(f"ERROR: Bot is not in guild {guild_id} or lacks 'application.commands' scope or permissions. Cannot sync commands.")
+                        print(f"ERROR: Bot is not in guild {guild_id} or lacks 'application.commands' scope or permissions. Cannot sync commands.")
                 except Exception as e_sync_guild:
                     print(f"Error during command sync for guild {guild_id}: {e_sync_guild}")
         elif not CLEAR_GLOBAL_COMMANDS_ONCE: # No target guilds specified, sync globally (if not cleared)
@@ -266,7 +286,7 @@ async def log_error(interaction: discord.Interaction, error: app_commands.AppCom
     if not interaction.response.is_done(): await interaction.response.defer(ephemeral=True) # Ensure deferred if error before
     
     if isinstance(error, app_commands.MissingAnyRole):
-        await send_method("You do not have permission to use this command.", ephemeral=True)
+        await send_method("You do not have permission to use this command.", ephemeral=True)    
     else:
         print(f"Error in /log command: {error}")
         await send_method("An error occurred while generating the log.", ephemeral=True)

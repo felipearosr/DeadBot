@@ -424,7 +424,7 @@ async def cut_command(
         # return 
 
     # --- Create Public Embed ---
-    public_embed = discord.Embed(title=f"Raid Cut Summary: {run_date}", color=discord.Color.green())
+    public_embed = discord.Embed(title=f"Raid Cut Summary: {run_date_from_csv}", color=discord.Color.green())
     public_embed.add_field(name="Logs", value=f"[{warcraft_logs_link.split('/')[-1] if '/' in warcraft_logs_link else 'Report'}]({warcraft_logs_link})", inline=False)
     public_embed.add_field(name="Booster Cut", value=f"{gold_per_booster_precise:,.2f}g", inline=True)
     public_embed.add_field(name="Num. of Boosters", value=str(len(active_boosters_with_ids)), inline=True)
@@ -438,7 +438,7 @@ async def cut_command(
     public_embed.set_footer(text="Run processed. Admins have detailed view & payment options.")
 
     # --- Admin Embed ---
-    admin_embed = discord.Embed(title=f"ADMIN VIEW - Cut Details: {run_date}", color=discord.Color.gold())
+    admin_embed = discord.Embed(title=f"ADMIN VIEW - Cut Details: {run_date_from_csv}", color=discord.Color.gold())
     admin_embed.add_field(name="Logs", value=f"[{warcraft_logs_link.split('/')[-1] if '/' in warcraft_logs_link else 'Report'}]({warcraft_logs_link})", inline=False)
     admin_embed.add_field(name="Total Gold Pot", value=f"{total_gold:,d}g", inline=True)
     if actual_rl_cut_percentage > 0:

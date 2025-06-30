@@ -320,9 +320,6 @@ async def cut_command(
         return
 
     # --- Initial Validations ---
-    if not utils.is_valid_date(run_date):
-        await interaction.followup.send("Invalid date format. Please use `YYYY-MM-DD`.", ephemeral=True)
-        return
     if total_gold <= 0:
         await interaction.followup.send("Total gold must be a positive number.", ephemeral=True)
         return

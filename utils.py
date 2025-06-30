@@ -174,35 +174,61 @@ async def save_run_log_entry_to_db(pool: asyncpg.Pool, log_entry: Dict) -> None:
     )
 
 # --- Other Utility Functions (No DB Interaction) ---
+
 def parse_roster_data(roster_string: str) -> Tuple[List[Tuple[str, str]], List[str]]:
+    """
+    Parses roster data from a string (CSV format from raid-helper).
+
+    Correctly categorizes players based on the 'Role' column (the first column):
+    - If Role is 'Absence', 'Tentative', or 'Bench', the player is benched.
+    - Otherwise, the player is considered an ACTIVE BOOSTER for payout.
+    """
     active_boosters_with_ids: List[Tuple[str, str]] = []
     benched_players_names: List[str] = []
-    lines = roster_string.replace('\r\n', '\n').replace('\r', '\n').strip().split('\n')
-    player_data_start_index = -1
-    expected_header = "role,spec,name,id,timestamp,status"
 
-    for i, line_content in enumerate(lines):
-        if line_content.strip().lower() == expected_header:
-            player_data_start_index = i + 1
-            break
+    # Define all roles that should NOT receive a payout.
+    # Using a set is efficient and makes the code easy to read.
+    EXCLUDED_ROLES = {"absence", "tentative", "bench"}
 
-    if player_data_start_index == -1:
-        print("DEBUG: Roster header not found in provided data.")
+    # Use the csv module to robustly handle CSV data, even with commas in names.
+    # StringIO treats the input string like a file.
+    reader = csv.reader(StringIO(roster_string))
+
+    # Safely skip the header row.
+    try:
+        header = next(reader)
+        # Optional: you could validate the header here if you want
+        # if header != ["Role", "Spec", "Name", "ID", "Timestamp", "Status"]:
+        #     print("Warning: CSV header does not match expected format.")
+    except StopIteration:
+        # This happens if the file is empty.
         return [], []
 
-    for line_content in lines[player_data_start_index:]:
-        stripped_line = line_content.strip()
-        if not stripped_line:
+    # Process each data row.
+    for row in reader:
+        # Ensure the row has enough columns to avoid errors.
+        if len(row) < 4:
             continue
-        parts = [p.strip() for p in stripped_line.split(',')]
-        if len(parts) >= 4:
-            role_or_class = parts[0]
-            player_name = parts[2]
-            discord_id_str = parts[3]
-            if role_or_class.lower() not in ["absence", "bench"] and player_name and discord_id_str.isdigit():
-                active_boosters_with_ids.append((player_name, discord_id_str))
-            elif role_or_class.lower() == "bench" and player_name:
-                benched_players_names.append(player_name)
+
+        # Extract data based on column index, stripping extra whitespace.
+        role = row[0].strip().lower()
+        player_name = row[2].strip()
+        discord_id = row[3].strip()
+
+        # Skip if essential data is missing.
+        if not player_name or not discord_id:
+            continue
+
+        # --- THIS IS THE CORRECTED LOGIC ---
+        if role in EXCLUDED_ROLES:
+            # If the role is in our exclusion list, add them to the benched list.
+            benched_players_names.append(player_name)
+        else:
+            # Otherwise, they are an active booster.
+            # We still validate that the Discord ID is a number before adding.
+            if discord_id.isdigit():
+                active_boosters_with_ids.append((player_name, discord_id))
+
     return active_boosters_with_ids, benched_players_names
 
 async def send_long_message_or_file(interaction: discord.Interaction,

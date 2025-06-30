@@ -7,6 +7,8 @@ import json # Still needed for active_boosters/benched_players JSONB
 import datetime
 from typing import List, Dict, Tuple, TypedDict, Optional, Any # Any for db args
 import asyncpg # New import
+import csv
+from io import StringIO
 
 # import config # Not strictly needed if DATABASE_URL is passed around, but can be for consistency
 
@@ -175,61 +177,74 @@ async def save_run_log_entry_to_db(pool: asyncpg.Pool, log_entry: Dict) -> None:
 
 # --- Other Utility Functions (No DB Interaction) ---
 
-def parse_roster_data(roster_string: str) -> Tuple[List[Tuple[str, str]], List[str]]:
-    """
-    Parses roster data from a string (CSV format from raid-helper).
 
-    Correctly categorizes players based on the 'Role' column (the first column):
-    - If Role is 'Absence', 'Tentative', or 'Bench', the player is benched.
-    - Otherwise, the player is considered an ACTIVE BOOSTER for payout.
+def parse_roster_data(roster_string: str) -> Tuple[Optional[str], List[Tuple[str, str]], List[str]]:
     """
+    Parses the full roster CSV export from raid-helper.
+
+    This function now reads both the event summary and the player list.
+    - It extracts the run date from the event summary section.
+    - It categorizes players based on their 'Role'.
+
+    Returns:
+        A tuple containing: (run_date_str, active_boosters, benched_players).
+        The run_date_str will be None if it cannot be found.
+    """
+    run_date: Optional[str] = None
     active_boosters_with_ids: List[Tuple[str, str]] = []
     benched_players_names: List[str] = []
 
-    # Define all roles that should NOT receive a payout.
-    # Using a set is efficient and makes the code easy to read.
     EXCLUDED_ROLES = {"absence", "tentative", "bench"}
 
-    # Use the csv module to robustly handle CSV data, even with commas in names.
-    # StringIO treats the input string like a file.
     reader = csv.reader(StringIO(roster_string))
+    
+    # A state flag to know when we are in the player list section
+    parsing_players = False
 
-    # Safely skip the header row.
-    try:
-        header = next(reader)
-        # Optional: you could validate the header here if you want
-        # if header != ["Role", "Spec", "Name", "ID", "Timestamp", "Status"]:
-        #     print("Warning: CSV header does not match expected format.")
-    except StopIteration:
-        # This happens if the file is empty.
-        return [], []
-
-    # Process each data row.
     for row in reader:
-        # Ensure the row has enough columns to avoid errors.
-        if len(row) < 4:
+        # Skip empty rows
+        if not row:
             continue
 
-        # Extract data based on column index, stripping extra whitespace.
-        role = row[0].strip().lower()
-        player_name = row[2].strip()
-        discord_id = row[3].strip()
-
-        # Skip if essential data is missing.
-        if not player_name or not discord_id:
+        # --- LOGIC TO FIND AND PARSE THE EVENT SUMMARY ---
+        # Check if this row looks like the event summary header
+        if not parsing_players and len(row) > 1 and row[0].strip().lower() == 'name' and row[1].strip().lower() == 'date':
+            try:
+                # The next row should contain the actual data
+                event_data_row = next(reader)
+                date_str = event_data_row[1].strip()  # Date is in the second column
+                # Convert from DD-MM-YYYY to the required YYYY-MM-DD format
+                dt_object = datetime.datetime.strptime(date_str, '%d-%m-%Y')
+                run_date = dt_object.strftime('%Y-%m-%d')
+            except (StopIteration, IndexError, ValueError) as e:
+                # Handle cases where the file ends, the row is too short, or date format is wrong
+                print(f"Could not parse run date from event summary: {e}")
             continue
 
-        # --- THIS IS THE CORRECTED LOGIC ---
-        if role in EXCLUDED_ROLES:
-            # If the role is in our exclusion list, add them to the benched list.
-            benched_players_names.append(player_name)
-        else:
-            # Otherwise, they are an active booster.
-            # We still validate that the Discord ID is a number before adding.
-            if discord_id.isdigit():
-                active_boosters_with_ids.append((player_name, discord_id))
+        # --- LOGIC TO FIND AND PARSE THE PLAYER LIST ---
+        # Check if this row is the player list header
+        if len(row) > 1 and row[0].strip().lower() == 'role' and row[1].strip().lower() == 'spec':
+            parsing_players = True  # We've found the start of the player list
+            continue # Skip the header row and start parsing players from the next line
 
-    return active_boosters_with_ids, benched_players_names
+        if parsing_players:
+            if len(row) < 4:
+                continue
+            
+            role = row[0].strip().lower()
+            player_name = row[2].strip()
+            discord_id = row[3].strip()
+
+            if not player_name or not discord_id:
+                continue
+
+            if role in EXCLUDED_ROLES:
+                benched_players_names.append(player_name)
+            else:
+                if discord_id.isdigit():
+                    active_boosters_with_ids.append((player_name, discord_id))
+
+    return run_date, active_boosters_with_ids, benched_players_names
 
 async def send_long_message_or_file(interaction: discord.Interaction,
                                     primary_content: str,

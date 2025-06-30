@@ -16,3 +16,4 @@ RAID_LEADER_CUT_PERCENTAGE = 0.015
 #RUN_LOGS_FILE = "run_logs.json"
 ALLOWED_ROLES_FOR_ADMIN_CMDS = ["Sales Leader"] # Example
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://user:pass@host:port/db_fallback")
+DEFAULT_PAYMENT_SUBJECT="SoF Heroic Unsaved Run"

@@ -304,12 +304,11 @@ async def log_error(interaction: discord.Interaction, error: app_commands.AppCom
 )
 async def cut_command(
     interaction: discord.Interaction,
-    run_date: str,
     warcraft_logs_link: str,
     total_gold: int,
     roster_file: discord.Attachment,
-    payment_subject: str, # Required
-    payment_body: str     # Required
+    payment_subject: Optional[str] = None, # <-- Changed from str to Optional[str]
+    payment_body: Optional[str] = None      # <-- Changed from str to Optional[str]
 ):
     await interaction.response.defer(ephemeral=True)
     bot_instance: RaidManagerBot = interaction.client # type: ignore
@@ -338,9 +337,26 @@ async def cut_command(
         await interaction.followup.send(f"Error reading roster file: {e}", ephemeral=True)
         return
 
+    # --- Call the new parser which returns THREE values ---
+    run_date_from_csv, active_boosters_with_ids, benched_players_names = utils.parse_roster_data(roster_data_string)
+    
+    # --- CRUCIAL: Check if the date was found ---
+    if not run_date_from_csv:
+        await interaction.followup.send(
+            "**Error:** Could not automatically detect the run date from the CSV file. "
+            "Please ensure the file was exported from Raid-Helper and includes the event summary section at the top.",
+            ephemeral=True
+        )
+        return
+
+    # --- NEW LOGIC TO HANDLE OPTIONAL PARAMETERS ---
+    # Use the user's input if provided, otherwise fall back to the default from config.py
+    final_subject = payment_subject or config.DEFAULT_PAYMENT_SUBJECT
+    final_body = payment_body or run_date_from_csv
+
     # current_run_session is a module-level global, used for this specific command's flow
     current_run_session.reset()
-    current_run_session.run_date = run_date
+    current_run_session.run_date = run_date_from_csv
     current_run_session.wcl_link = warcraft_logs_link
     current_run_session.total_gold = total_gold
     current_run_session.roster_raw = roster_data_string
@@ -375,7 +391,7 @@ async def cut_command(
 
     # --- Log Entry Preparation ---
     log_entry_data = {
-        "run_date": run_date, 
+        "run_date": run_date_from_csv, 
         "wcl_link": warcraft_logs_link, 
         "total_gold": total_gold,
         "raid_leader_cut_percentage": actual_rl_cut_percentage,
@@ -493,7 +509,7 @@ async def cut_command(
                     # Assuming Area52 is the default/target realm for payments
                     if "-Area52" not in alt_name_for_payment.replace(" ", ""): 
                         alt_name_for_payment += "-Area52"
-                    salestool_part = f"{alt_name_for_payment}:{gold_per_booster_for_payment}:{payment_subject}:{payment_body}"
+                    salestool_part = f"{alt_name_for_payment}:{gold_per_booster_for_payment}:{final_subject}:{final_body}"
                     if alt_faction_lower == "horde": horde_salestools_parts.append(salestool_part)
                     elif alt_faction_lower == "alliance": alliance_salestools_parts.append(salestool_part)
         
